@@ -6,33 +6,99 @@ type LineSeg = { type: 'line'; waypoints: string[]; label?: string };
 type CircleSeg = { type: 'circle'; at: string; direction: 'left' | 'right'; label?: string };
 type Segment = LineSeg | CircleSeg;
 
-// Geometry, 20x40 small arena
-const W = 400, H = 200;
-const letterCoords: Record<string, { x: number; y: number }> = {
-  A: { x: 0, y: H / 2 },
-  C: { x: W, y: H / 2 },
-  K: { x: (W * 1) / 6, y: H - 2 },
-  E: { x: (W * 3) / 6, y: H - 2 },
-  H: { x: (W * 5) / 6, y: H - 2 },
-  F: { x: (W * 1) / 6, y: 2 },
-  B: { x: (W * 3) / 6, y: 2 },
-  M: { x: (W * 5) / 6, y: 2 },
-  D: { x: (W * 1) / 3, y: H / 2 },
-  X: { x: (W * 1) / 2, y: H / 2 },
-  G: { x: (W * 2) / 3, y: H / 2 },
+// Inner arena size in px (maps 20m x 40m)
+const ARENA_W = 200;
+const ARENA_H = 400;
+
+// Visual padding so nothing clips
+const PAD = 24;           // outer margin around the whole SVG
+const LABEL_OFFSET = 14;  // how far labels sit outside the rail
+
+// Root SVG size includes padding
+const W = ARENA_W + PAD * 2;
+const H = ARENA_H + PAD * 2;
+
+// Helpers to convert inner arena coords to SVG coords
+const X = (x: number) => x + PAD;
+const Y = (y: number) => y + PAD;
+
+// --- Geometry (letter anchor points INSIDE the arena box) ---
+// Coordinate system: (0,0) is top-left corner INSIDE the arena,
+// y increases downward. C at top mid, A at bottom mid.
+//
+// Distances along the long side (40 m):
+// - 6 m from either short end for F/K and M/H
+// - 20 m mid for B/E and X
+const Y_TOP_6  = (6 / 40) * ARENA_H;   // 6m from top = near C
+const Y_MID_20 = (20 / 40) * ARENA_H;  // middle
+const Y_BOT_34 = (34 / 40) * ARENA_H;  // 6m up from A
+
+const geom: Record<string, { x: number; y: number }> = {
+  // short sides
+  C: { x: ARENA_W / 2, y: 0 },
+  A: { x: ARENA_W / 2, y: ARENA_H },
+
+  // left rail (A → C): K (bottom), E (middle), H (top)
+K: { x: 0, y: Y_BOT_34 },
+E: { x: 0, y: Y_MID_20 },
+H: { x: 0, y: Y_TOP_6 },
+
+// right rail (A → C): F (bottom), B (middle), M (top)
+F: { x: ARENA_W, y: Y_BOT_34 },
+B: { x: ARENA_W, y: Y_MID_20 },
+M: { x: ARENA_W, y: Y_TOP_6 },
+
+
+
+  // centerline
+  G: { x: ARENA_W / 2, y: Y_TOP_6 },
+  X: { x: ARENA_W / 2, y: Y_MID_20 },
+  D: { x: ARENA_W / 2, y: Y_BOT_34 },
 };
 
+// Map used by path renderer
 function pts(letters: string[]) {
   return letters
     .map((id) => {
-      const p = letterCoords[id];
+      const p = geom[id];
       if (!p) throw new Error(`Unknown letter ${id}`);
-      return `${p.x},${p.y}`;
+      return `${X(p.x)},${Y(p.y)}`;
     })
     .join(' ');
 }
 
-// Approximate Intro A segments for demo
+// --- Label positions (OUTSIDE the arena box) ---
+function labelPos(id: string) {
+  const p = geom[id];
+  if (!p) throw new Error(`Unknown letter ${id}`);
+
+  // top/bottom center labels outside the short sides
+  if (id === 'C') return { x: p.x, y: -LABEL_OFFSET, anchor: 'middle' as const, dy: 0 };
+  if (id === 'A') return { x: p.x, y: ARENA_H + LABEL_OFFSET, anchor: 'middle' as const, dy: 0 };
+
+ // left rail letters outside to the left
+if (id === 'K' || id === 'E' || id === 'H') {
+  return { x: -LABEL_OFFSET, y: p.y, anchor: 'end' as const, dy: 0 };
+}
+// right rail letters outside to the right
+if (id === 'F' || id === 'B' || id === 'M') {
+  return { x: ARENA_W + LABEL_OFFSET, y: p.y, anchor: 'start' as const, dy: 0 };
+}
+
+
+  // centerline letters also outside on the right, a bit further so they don't overlap right-rail labels
+  if (id === 'D' || id === 'X' || id === 'G') {
+    return { x: ARENA_W + LABEL_OFFSET * 3, y: p.y, anchor: 'start' as const, dy: 0 };
+  }
+
+  // fallback (shouldn't hit)
+  return { x: p.x, y: p.y, anchor: 'middle' as const, dy: 0 };
+}
+
+// Order to draw labels (purely cosmetic)
+const LETTERS: string[] = ['C', 'M', 'B', 'F', 'H', 'E', 'K', 'G', 'X', 'D', 'A'];
+
+// --- Test data (approximate Intro A) ---
 const introA_20x40: Segment[] = [
   { type: 'line', waypoints: ['A', 'X', 'C'], label: 'Enter (trot), then walk' },
   { type: 'line', waypoints: ['C', 'M'], label: 'Track right, trot' },
@@ -44,18 +110,21 @@ const introA_20x40: Segment[] = [
   { type: 'line', waypoints: ['F', 'A', 'X'], label: 'Down centerline (walk)' },
 ];
 
+// 20 m circle: radius is half the width of the arena
 function CircleAt({ at }: { at: string }) {
-  const c = letterCoords[at];
-  if (!c) return null;
-  const r = H / 4; // ~10 m
-  return <circle cx={c.x} cy={c.y} r={r} fill="none" stroke="currentColor" strokeWidth={1.5} />;
+  const p = geom[at];
+  if (!p) return null;
+  const cx = X(ARENA_W / 2);   // centered horizontally
+  const cy = Y(p.y);           // same Y as the letter (B or E)
+  const r = ARENA_W / 2;       // 10 m in real units
+  return <circle cx={cx} cy={cy} r={r} fill="none" stroke="currentColor" strokeWidth={1.5} />;
 }
 
 function SegmentLabel({ label, near }: { label: string; near: string }) {
-  const p = letterCoords[near];
+  const p = geom[near];
   if (!p) return null;
   return (
-    <text x={p.x} y={p.y} dy={-8} fontSize={10} textAnchor="middle">
+    <text x={X(p.x)} y={Y(p.y)} dy={-8} fontSize={10} textAnchor="middle">
       {label}
     </text>
   );
@@ -108,27 +177,39 @@ export default function Page() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, marginTop: 16 }}>
         <div style={{ border: '1px solid #eee', borderRadius: 10, padding: 12 }}>
           <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="auto">
-            {/* rail */}
-            <rect x={0} y={0} width={W} height={H} fill="none" stroke="#222" strokeWidth={2} />
-{/* quarter lines */}
-<line x1={0} y1={H * 0.25} x2={W} y2={H * 0.25} stroke="#e0e0e0" strokeDasharray="4 4" />
-<line x1={0} y1={H * 0.75} x2={W} y2={H * 0.75} stroke="#e0e0e0" strokeDasharray="4 4" />
+            {/* inner arena */}
+            <rect x={X(0)} y={Y(0)} width={ARENA_W} height={ARENA_H} fill="none" stroke="#222" strokeWidth={2} />
+
+            {/* quarter lines */}
+            <line x1={X(0)} y1={Y(ARENA_H * 0.25)} x2={X(ARENA_W)} y2={Y(ARENA_H * 0.25)} stroke="#e0e0e0" strokeDasharray="4 4" />
+            <line x1={X(0)} y1={Y(ARENA_H * 0.75)} x2={X(ARENA_W)} y2={Y(ARENA_H * 0.75)} stroke="#e0e0e0" strokeDasharray="4 4" />
 
             {/* centerline */}
-            <line x1={0} y1={H / 2} x2={W} y2={H / 2} stroke="#bbb" strokeDasharray="4 4" />
+            <line x1={X(ARENA_W / 2)} y1={Y(0)} x2={X(ARENA_W / 2)} y2={Y(ARENA_H)} stroke="#bbb" strokeDasharray="4 4" />
 
-            {/* letters */}
-            {Object.entries(letterCoords).map(([id, p]) => (
-              <text key={id} x={p.x} y={p.y} fontSize={12} textAnchor="middle" dominantBaseline="middle">
-                {id}
-              </text>
-            ))}
+            {/* labels outside the box */}
+            {LETTERS.map((id) => {
+              const p = labelPos(id);
+              return (
+                <text
+                  key={id}
+                  x={X(p.x)}
+                  y={Y(p.y)}
+                  fontSize={12}
+                  textAnchor={p.anchor}
+                  dominantBaseline="middle"
+                >
+                  {id}
+                </text>
+              );
+            })}
 
             {/* path */}
             <g stroke="#0b74ff">
               {introA_20x40.map((seg, i) => (visible[i] ? <DrawSegment key={i} seg={seg} /> : null))}
             </g>
           </svg>
+
           <div style={{ fontSize: 12, color: '#444', marginTop: 8 }}>
             Blue lines are an approximate path for demo purposes.
           </div>
